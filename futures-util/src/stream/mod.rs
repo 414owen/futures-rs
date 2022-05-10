@@ -103,7 +103,8 @@ mod select;
 pub use self::select::{select, select_early_exit, Select};
 
 mod select_with_strategy;
-pub use self::select_with_strategy::{select_with_strategy, PollNext, SelectWithStrategy, ExitStrategy};
+pub use self::select_with_strategy::{select_with_strategy, PollNext, SelectWithStrategy,
+                                     ExitWhenBothFinished, ExitWhenEitherFinished, ExitStrategy};
 
 mod unfold;
 pub use self::unfold::{unfold, Unfold};

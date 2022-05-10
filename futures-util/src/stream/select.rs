@@ -1,5 +1,6 @@
 use super::assert_stream;
-use crate::stream::{select_with_strategy, PollNext, SelectWithStrategy, ExitStrategy};
+use crate::stream::{ select_with_strategy, PollNext, SelectWithStrategy,
+                     ExitWhenBothFinished, ExitWhenEitherFinished, ExitStrategy };
 use core::pin::Pin;
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
@@ -9,9 +10,9 @@ pin_project! {
     /// Stream for the [`select()`] function.
     #[derive(Debug)]
     #[must_use = "streams do nothing unless polled"]
-    pub struct Select<St1, St2> {
+    pub struct Select<St1, St2, Exit> {
         #[pin]
-        inner: SelectWithStrategy<St1, St2, fn(&mut PollNext)-> PollNext, PollNext>,
+        inner: SelectWithStrategy<St1, St2, fn(&mut PollNext)-> PollNext, PollNext, Exit>,
     }
 }
 
@@ -44,38 +45,33 @@ pin_project! {
 /// }
 /// # });
 /// ```
-pub fn select<St1, St2>(stream1: St1, stream2: St2) -> Select<St1, St2>
-where
-    St1: Stream,
-    St2: Stream<Item = St1::Item>,
-{
-    select_with_exit(stream1, stream2, ExitStrategy::WhenBothFinish)
+
+fn round_robin(last: &mut PollNext) -> PollNext {
+    last.toggle()
 }
 
-/// Same as `select`, but finishes when either stream finishes
-pub fn select_early_exit<St1, St2>(stream1: St1, stream2: St2) -> Select<St1, St2>
+pub fn select<St1, St2>(stream1: St1, stream2: St2) -> Select<St1, St2, ExitWhenBothFinished>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
 {
-    select_with_exit(stream1, stream2, ExitStrategy::WhenEitherFinish)
-}
-
-fn select_with_exit<St1, St2>(stream1: St1, stream2: St2, exit_strategy: ExitStrategy) -> Select<St1, St2>
-where
-    St1: Stream,
-    St2: Stream<Item = St1::Item>,
-{
-    fn round_robin(last: &mut PollNext) -> PollNext {
-        last.toggle()
-    }
-
     assert_stream::<St1::Item, _>(Select {
-        inner: select_with_strategy(stream1, stream2, round_robin, exit_strategy),
+        inner: select_with_strategy(stream1, stream2, round_robin, ExitWhenBothFinished),
     })
 }
 
-impl<St1, St2> Select<St1, St2> {
+/// Same as `select`, but finishes when either stream finishes
+pub fn select_early_exit<St1, St2>(stream1: St1, stream2: St2) -> Select<St1, St2, ExitWhenEitherFinished>
+where
+    St1: Stream,
+    St2: Stream<Item = St1::Item>,
+{
+    assert_stream::<St1::Item, _>(Select {
+        inner: select_with_strategy(stream1, stream2, round_robin, ExitWhenEitherFinished),
+    })
+}
+
+impl<St1, St2, Exit> Select<St1, St2, Exit> {
     /// Acquires a reference to the underlying streams that this combinator is
     /// pulling from.
     pub fn get_ref(&self) -> (&St1, &St2) {
@@ -110,20 +106,22 @@ impl<St1, St2> Select<St1, St2> {
     }
 }
 
-impl<St1, St2> FusedStream for Select<St1, St2>
+impl<St1, St2, Exit> FusedStream for Select<St1, St2, Exit>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
+    Exit: ExitStrategy,
 {
     fn is_terminated(&self) -> bool {
         self.inner.is_terminated()
     }
 }
 
-impl<St1, St2> Stream for Select<St1, St2>
+impl<St1, St2, Exit> Stream for Select<St1, St2, Exit>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
+    Exit: ExitStrategy,
 {
     type Item = St1::Item;
 

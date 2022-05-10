@@ -37,7 +37,7 @@ impl Default for PollNext {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-enum InternalState {
+pub enum InternalState {
     Start,
     LeftFinished,
     RightFinished,
@@ -62,23 +62,28 @@ impl InternalState {
     }
 }
 
-/// Decides whether to exit when both streams are completed, or only one
-/// is completed. If you need to exit when a specific stream has finished,
-/// feel free to add a case here.
-#[derive(Clone, Copy, Debug)]
-pub enum ExitStrategy {
-    /// Select stream finishes when both substreams finish
-    WhenBothFinish,
-    /// Select stream finishes when either substream finishes
-    WhenEitherFinish,
+pub trait ExitStrategy {
+    fn is_finished(state: InternalState) -> bool;
 }
 
-impl ExitStrategy {
-    fn is_finished(self, state: InternalState) -> bool {
-        match (state, self) {
-            (InternalState::BothFinished, _) => true,
-            (InternalState::Start, ExitStrategy::WhenEitherFinish) => false,
-            (_, ExitStrategy::WhenBothFinish) => false,
+pub struct ExitWhenBothFinished;
+pub struct ExitWhenEitherFinished;
+
+impl ExitStrategy for ExitWhenBothFinished {
+    #[inline]
+    fn is_finished(state: InternalState) -> bool {
+        match state {
+            InternalState::BothFinished => true,
+            _ => false,
+        }
+    }
+}
+
+impl ExitStrategy for ExitWhenEitherFinished {
+    #[inline]
+    fn is_finished(state: InternalState) -> bool {
+        match state {
+            InternalState::Start => false,
             _ => true,
         }
     }
@@ -88,7 +93,7 @@ pin_project! {
     /// Stream for the [`select_with_strategy()`] function. See function docs for details.
     #[must_use = "streams do nothing unless polled"]
     #[project = SelectWithStrategyProj]
-    pub struct SelectWithStrategy<St1, St2, Clos, State> {
+    pub struct SelectWithStrategy<St1, St2, Clos, State, Exit> {
         #[pin]
         stream1: St1,
         #[pin]
@@ -96,7 +101,7 @@ pin_project! {
         internal_state: InternalState,
         state: State,
         clos: Clos,
-        exit_strategy: ExitStrategy,
+        exit_strategy: Exit,
     }
 }
 
@@ -119,7 +124,7 @@ pin_project! {
 ///
 /// ```rust
 /// # futures::executor::block_on(async {
-/// use futures::stream::{ repeat, select_with_strategy, PollNext, StreamExt, ExitStrategy };
+/// use futures::stream::{ repeat, select_with_strategy, PollNext, StreamExt, ExitWhenBothFinished};
 ///
 /// let left = repeat(1);
 /// let right = repeat(2);
@@ -130,7 +135,7 @@ pin_project! {
 /// // use a function pointer instead of a closure.
 /// fn prio_left(_: &mut ()) -> PollNext { PollNext::Left }
 ///
-/// let mut out = select_with_strategy(left, right, prio_left, ExitStrategy::WhenBothFinish);
+/// let mut out = select_with_strategy(left, right, prio_left, ExitWhenBothFinished);
 ///
 /// for _ in 0..100 {
 ///     // Whenever we poll out, we will always get `1`.
@@ -145,7 +150,8 @@ pin_project! {
 ///
 /// ```rust
 /// # futures::executor::block_on(async {
-/// use futures::stream::{ repeat, select_with_strategy, FusedStream, PollNext, StreamExt, ExitStrategy };
+/// use futures::stream::{ repeat, select_with_strategy, FusedStream, PollNext,
+///                        StreamExt, ExitWhenBothFinished, ExitWhenEitherFinished };
 ///
 /// // Finishes when both streams finish
 /// {
@@ -154,7 +160,7 @@ pin_project! {
 ///
 ///     let rrobin = |last: &mut PollNext| last.toggle();
 ///
-///     let mut out = select_with_strategy(left, right, rrobin, ExitStrategy::WhenBothFinish);
+///     let mut out = select_with_strategy(left, right, rrobin, ExitWhenBothFinished);
 ///
 ///     for _ in 0..10 {
 ///         // We should be alternating now.
@@ -175,7 +181,7 @@ pin_project! {
 ///
 ///     let rrobin = |last: &mut PollNext| last.toggle();
 ///
-///     let mut out = select_with_strategy(left, right, rrobin, ExitStrategy::WhenEitherFinish);
+///     let mut out = select_with_strategy(left, right, rrobin, ExitWhenEitherFinished);
 ///
 ///     for _ in 0..10 {
 ///         // We should be alternating now.
@@ -188,17 +194,18 @@ pin_project! {
 /// # });
 /// ```
 /// 
-pub fn select_with_strategy<St1, St2, Clos, State>(
+pub fn select_with_strategy<St1, St2, Clos, State, Exit>(
     stream1: St1,
     stream2: St2,
     which: Clos,
-    exit_strategy: ExitStrategy,
-) -> SelectWithStrategy<St1, St2, Clos, State>
+    exit_strategy: Exit,
+) -> SelectWithStrategy<St1, St2, Clos, State, Exit>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
     Clos: FnMut(&mut State) -> PollNext,
     State: Default,
+    Exit: ExitStrategy,
 {
     assert_stream::<St1::Item, _>(SelectWithStrategy {
         stream1,
@@ -210,7 +217,7 @@ where
     })
 }
 
-impl<St1, St2, Clos, State> SelectWithStrategy<St1, St2, Clos, State> {
+impl<St1, St2, Clos, State, Exit> SelectWithStrategy<St1, St2, Clos, State, Exit> {
     /// Acquires a reference to the underlying streams that this combinator is
     /// pulling from.
     pub fn get_ref(&self) -> (&St1, &St2) {
@@ -245,20 +252,21 @@ impl<St1, St2, Clos, State> SelectWithStrategy<St1, St2, Clos, State> {
     }
 }
 
-impl<St1, St2, Clos, State> FusedStream for SelectWithStrategy<St1, St2, Clos, State>
+impl<St1, St2, Clos, State, Exit> FusedStream for SelectWithStrategy<St1, St2, Clos, State, Exit>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
     Clos: FnMut(&mut State) -> PollNext,
+    Exit: ExitStrategy,
 {
     fn is_terminated(&self) -> bool {
-        self.exit_strategy.is_finished(self.internal_state)
+        Exit::is_finished(self.internal_state)
     }
 }
 
 #[inline]
-fn poll_side<St1, St2, Clos, State>(
-    select: &mut SelectWithStrategyProj<'_, St1, St2, Clos, State>,
+fn poll_side<St1, St2, Clos, State, Exit>(
+    select: &mut SelectWithStrategyProj<'_, St1, St2, Clos, State, Exit>,
     side: PollNext,
     cx: &mut Context<'_>,
 ) -> Poll<Option<St1::Item>>
@@ -273,21 +281,21 @@ where
 }
 
 #[inline]
-fn poll_inner<St1, St2, Clos, State>(
-    select: &mut SelectWithStrategyProj<'_, St1, St2, Clos, State>,
+fn poll_inner<St1, St2, Clos, State, Exit>(
+    select: &mut SelectWithStrategyProj<'_, St1, St2, Clos, State, Exit>,
     side: PollNext,
     cx: &mut Context<'_>,
-    exit_strat: ExitStrategy,
 ) -> Poll<Option<St1::Item>>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
+    Exit: ExitStrategy,
 {
     match poll_side(select, side, cx) {
         Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
         Poll::Ready(None) => {
             select.internal_state.finish(side);
-            if exit_strat.is_finished(*select.internal_state) {
+            if Exit::is_finished(*select.internal_state) {
                 return Poll::Ready(None);
             }
         }
@@ -303,26 +311,25 @@ where
     }
 }
 
-impl<St1, St2, Clos, State> Stream for SelectWithStrategy<St1, St2, Clos, State>
+impl<St1, St2, Clos, State, Exit> Stream for SelectWithStrategy<St1, St2, Clos, State, Exit>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
     Clos: FnMut(&mut State) -> PollNext,
+    Exit: ExitStrategy,
 {
     type Item = St1::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<St1::Item>> {
         let mut this = self.project();
-        let exit_strategy: ExitStrategy = *this.exit_strategy;
-
-        if exit_strategy.is_finished(*this.internal_state) {
+        if Exit::is_finished(*this.internal_state) {
             return Poll::Ready(None);
         }
 
         match this.internal_state {
             InternalState::Start => {
                 let next_side = (this.clos)(this.state);
-                poll_inner(&mut this, next_side, cx, exit_strategy)
+                poll_inner(&mut this, next_side, cx)
             }
             InternalState::LeftFinished => match this.stream2.poll_next(cx) {
                 Poll::Ready(None) => {
@@ -343,7 +350,7 @@ where
     }
 }
 
-impl<St1, St2, Clos, State> fmt::Debug for SelectWithStrategy<St1, St2, Clos, State>
+impl<St1, St2, Clos, State, Exit> fmt::Debug for SelectWithStrategy<St1, St2, Clos, State, Exit>
 where
     St1: fmt::Debug,
     St2: fmt::Debug,
