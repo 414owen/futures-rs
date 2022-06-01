@@ -1,5 +1,7 @@
 use super::assert_stream;
-use crate::stream::{select_with_strategy, PollNext, SelectWithStrategy, ClosedStreams, ExitStrategy};
+use crate::stream::{
+    select_with_strategy, ClosedStreams, ExitStrategy, PollNext, SelectWithStrategy,
+};
 use core::pin::Pin;
 use futures_core::stream::{FusedStream, Stream};
 use futures_core::task::{Context, Poll};
@@ -19,6 +21,7 @@ pin_project! {
 pub struct ExitWhenBothFinished {}
 
 impl ExitStrategy for ExitWhenBothFinished {
+    #[inline]
     fn is_terminated(closed_streams: ClosedStreams) -> bool {
         match closed_streams {
             ClosedStreams::Both => true,
@@ -31,6 +34,7 @@ impl ExitStrategy for ExitWhenBothFinished {
 pub struct ExitWhenEitherFinished {}
 
 impl ExitStrategy for ExitWhenEitherFinished {
+    #[inline]
     fn is_terminated(closed_streams: ClosedStreams) -> bool {
         match closed_streams {
             ClosedStreams::None => false,
@@ -38,7 +42,6 @@ impl ExitStrategy for ExitWhenEitherFinished {
         }
     }
 }
-
 
 fn round_robin(last: &mut PollNext) -> PollNext {
     last.toggle()
@@ -83,9 +86,11 @@ where
     })
 }
 
-
 /// Same as `select`, but finishes when either stream finishes
-pub fn select_early_exit<St1, St2>(stream1: St1, stream2: St2) -> Select<St1, St2, ExitWhenEitherFinished>
+pub fn select_early_exit<St1, St2>(
+    stream1: St1,
+    stream2: St2,
+) -> Select<St1, St2, ExitWhenEitherFinished>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,

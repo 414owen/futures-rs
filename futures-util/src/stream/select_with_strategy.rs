@@ -58,8 +58,7 @@ impl ClosedStreams {
             (ClosedStreams::None, PollNext::Right) => {
                 *self = ClosedStreams::Right;
             }
-            (ClosedStreams::Left, PollNext::Right)
-            | (ClosedStreams::Right, PollNext::Left) => {
+            (ClosedStreams::Left, PollNext::Right) | (ClosedStreams::Right, PollNext::Left) => {
                 *self = ClosedStreams::Both;
             }
             _ => {}
@@ -332,11 +331,11 @@ where
     type Item = St1::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<St1::Item>> {
-        let mut this = self.project();
-
-        if Exit::is_terminated(*this.closed_streams) {
+        if self.is_terminated() {
             return Poll::Ready(None);
         }
+
+        let mut this = self.project();
 
         match this.closed_streams {
             ClosedStreams::None => {
