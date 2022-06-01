@@ -45,10 +45,6 @@ pub enum ClosedStreams {
     Both,
 }
 
-pub trait ExitStrategy {
-    fn is_terminated(closed_streams: ClosedStreams) -> bool;
-}
-
 impl ClosedStreams {
     fn finish(&mut self, ps: PollNext) {
         match (&self, ps) {
@@ -58,8 +54,7 @@ impl ClosedStreams {
             (ClosedStreams::None, PollNext::Right) => {
                 *self = ClosedStreams::Right;
             }
-            (ClosedStreams::Left, PollNext::Right)
-            | (ClosedStreams::Right, PollNext::Left) => {
+            (ClosedStreams::Left, PollNext::Right) | (ClosedStreams::Right, PollNext::Left) => {
                 *self = ClosedStreams::Both;
             }
             _ => {}
@@ -79,7 +74,7 @@ pin_project! {
         closed_streams: ClosedStreams,
         state: State,
         clos: Clos,
-        _marker: PhantomData<Exit>,
+        should_exit: Exit,
     }
 }
 
@@ -210,13 +205,14 @@ pub fn select_with_strategy<St1, St2, Clos, State, Exit>(
     stream1: St1,
     stream2: St2,
     which: Clos,
+    should_exit: Exit,
 ) -> SelectWithStrategy<St1, St2, Clos, State, Exit>
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
     Clos: FnMut(&mut State) -> PollNext,
     State: Default,
-    Exit: ExitStrategy,
+    Exit: Fn(ClosedStreams) -> bool,
 {
     assert_stream::<St1::Item, _>(SelectWithStrategy {
         stream1,
@@ -224,7 +220,7 @@ where
         state: Default::default(),
         clos: which,
         closed_streams: ClosedStreams::None,
-        _marker: PhantomData,
+        should_exit,
     })
 }
 
@@ -268,10 +264,10 @@ where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
     Clos: FnMut(&mut State) -> PollNext,
-    Exit: ExitStrategy,
+    Exit: Fn(ClosedStreams) -> bool,
 {
     fn is_terminated(&self) -> bool {
-        Exit::is_terminated(self.closed_streams)
+        (self.should_exit)(self.closed_streams)
     }
 }
 
@@ -300,13 +296,13 @@ fn poll_inner<St1, St2, Clos, State, Exit>(
 where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
-    Exit: ExitStrategy,
+    Exit: Fn(ClosedStreams) -> bool,
 {
     match poll_side(select, side, cx) {
         Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
         Poll::Ready(None) => {
             select.closed_streams.finish(side);
-            if Exit::is_terminated(*select.closed_streams) {
+            if (select.should_exit)(*select.closed_streams) {
                 return Poll::Ready(None);
             }
         }
@@ -327,16 +323,16 @@ where
     St1: Stream,
     St2: Stream<Item = St1::Item>,
     Clos: FnMut(&mut State) -> PollNext,
-    Exit: ExitStrategy,
+    Exit: Fn(ClosedStreams) -> bool,
 {
     type Item = St1::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<St1::Item>> {
-        let mut this = self.project();
-
-        if Exit::is_terminated(*this.closed_streams) {
+        if (self.should_exit)(self.closed_streams) {
             return Poll::Ready(None);
         }
+
+        let mut this = self.project();
 
         match this.closed_streams {
             ClosedStreams::None => {
